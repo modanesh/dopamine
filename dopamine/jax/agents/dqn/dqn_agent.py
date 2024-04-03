@@ -33,7 +33,7 @@ import jax.numpy as jnp
 import numpy as onp
 import optax
 import tensorflow as tf
-
+from flax import errors
 
 NATURE_DQN_OBSERVATION_SHAPE = dqn_agent.NATURE_DQN_OBSERVATION_SHAPE
 NATURE_DQN_DTYPE = jnp.uint8
@@ -109,7 +109,10 @@ def train(
 
   def loss_fn(params, target):
     def q_online(state):
-      return network_def.apply(params, state)
+      try:
+          return network_def.apply(params, state)
+      except errors.ApplyScopeInvalidVariablesStructureError as e:
+          return network_def.apply(params["params"], state)
 
     q_values = jax.vmap(q_online)(states).q_values
     q_values = jnp.squeeze(q_values)
@@ -119,7 +122,10 @@ def train(
     return jnp.mean(jax.vmap(losses.mse_loss)(target, replay_chosen_q))
 
   def q_target(state):
-    return network_def.apply(target_params, state)
+    try:
+      return network_def.apply(target_params, state)
+    except errors.ApplyScopeInvalidVariablesStructureError as e:
+      return network_def.apply(target_params["params"], state)
 
   target = target_q(q_target, next_states, rewards, terminals, cumulative_gamma)
   grad_fn = jax.value_and_grad(loss_fn)
