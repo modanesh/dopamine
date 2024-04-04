@@ -12,12 +12,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Compact implementation of Ensemble Soft Actor-Critic agent in JAX.
+"""Compact implementation of a Soft Actor-Critic agent in JAX.
 
 Based on agent described in
-  "Uncertainty-Based Offline Reinforcement Learning with Diversified Q-Ensemble"
-  by Gaon An et al.
-  https://arxiv.org/abs/2110.01548
+  "Soft Actor-Critic Algorithms and Applications"
+  by Tuomas Haarnoja et al.
+  https://arxiv.org/abs/1812.05905
 """
 
 import functools
@@ -31,7 +31,7 @@ from dopamine.jax import continuous_networks
 from dopamine.jax import losses
 from dopamine.jax.agents.dqn import dqn_agent
 # pylint: disable=unused-import
-# This enables (experimental) networks for SAC-N from pixels.
+# This enables (experimental) networks for SAC from pixels.
 # Note, that the full name import is required to avoid a naming
 # collision with the short name import (continuous_networks) above.
 import dopamine.labs.sac_from_pixels.continuous_networks
@@ -60,8 +60,8 @@ except tf.errors.NotFoundError:
         "If you don't have a GPU, this is expected."
     ))
 
-gin.constant('sac_agent.IMAGE_DTYPE', onp.uint8)
-gin.constant('sac_agent.STATE_DTYPE', onp.float32)
+gin.constant('ensemble_sac_agent.IMAGE_DTYPE', onp.uint8)
+gin.constant('ensemble_sac_agent.STATE_DTYPE', onp.float32)
 
 
 @functools.partial(jax.jit, static_argnums=(0, 1, 2))
@@ -89,13 +89,13 @@ def train(
     Returns a list of updated values and losses.
 
     Args:
-      network_def: The SAC-N network definition.
-      optim: The SAC-N optimizer (which also wraps the SAC-N parameters).
+      network_def: The SAC network definition.
+      optim: The SAC optimizer (which also wraps the SAC parameters).
       alpha_optim: The optimizer for alpha.
-      optimizer_state: The SAC-N optimizer state.
+      optimizer_state: The SAC optimizer state.
       alpha_optimizer_state: The alpha optimizer state.
-      network_params: Parameters for SAC-N's online network.
-      target_params: The parameters for SAC-N's target network.
+      network_params: Parameters for SAC's online network.
+      target_params: The parameters for SAC's target network.
       log_alpha: Parameters for alpha network.
       key: An rng key to use for random action selection.
       states: A batch of states.
@@ -126,13 +126,12 @@ def train(
             next_state: jnp.ndarray,
             terminal: jnp.ndarray,
             rng: jnp.ndarray,
-            num_critics: int,
     ) -> Tuple[jnp.ndarray, Mapping[str, jnp.ndarray]]:
         """Calculates the loss for one transition.
 
         Args:
-          params: Parameters for the SAC-N network.
-          log_alpha: SAC-N's log_alpha parameter.
+          params: Parameters for the SAC network.
+          log_alpha: SAC's log_alpha parameter.
           state: A single state vector.
           action: A single action vector.
           reward: A reward scalar.
@@ -141,25 +140,20 @@ def train(
           rng: An RNG key to use for sampling actions.
 
         Returns:
-          A tuple containing 1) the combined SAC-N loss and 2) a mapping containing
+          A tuple containing 1) the combined SAC loss and 2) a mapping containing
             statistics from the loss step.
         """
         rng1, rng2 = jax.random.split(rng, 2)
 
-        # TODO (update this): J_Q(\theta) from equation (5) in paper.
-        q_values = []
-        for _ in range(num_critics):
-            q_value = network_def.apply(
-                params, state, action, method=network_def.critic
-            )
-            q_value = jnp.squeeze(q_value)
-            q_values.append(q_value)
+        # J_Q(\theta) from equation (5) in paper.
+        q_values = network_def.apply(
+            params, state, action, method=network_def.critic
+        )
+        q_values = jnp.squeeze(jnp.array(q_values))
 
         target_outputs = network_def.apply(target_params, next_state, rng1, True)
-        target_q_value_1, target_q_value_2 = target_outputs.critic
-        target_q_value = jnp.squeeze(
-            jnp.minimum(target_q_value_1, target_q_value_2)
-        )
+        target_q_values = jnp.squeeze(jnp.array(target_outputs.critic))
+        target_q_value = jnp.min(target_q_values)
 
         alpha_value = jnp.exp(log_alpha)  # pytype: disable=wrong-arg-types  # numpy-scalars
         log_prob = target_outputs.actor.log_probability
@@ -167,28 +161,26 @@ def train(
                 target_q_value - alpha_value * log_prob
         ) * (1.0 - terminal)
         target = jax.lax.stop_gradient(target)
-        critics_loss = []
-        for q_value in q_values:
-            critic_loss = losses.mse_loss(q_value, target)
-            critics_loss.append(jnp.mean(critic_loss))
+        critic_losses = losses.mse_loss(q_values, target)
+        critic_loss = jnp.mean(critic_losses)
 
-        # TODO (update this): J_{\pi}(\phi) from equation (9) in paper.
+        # J_{\pi}(\phi) from equation (9) in paper.
         mean_action, sampled_action, action_log_prob = network_def.apply(
             params, state, rng2, method=network_def.actor
         )
 
         # We use frozen_params so that gradients can flow back to the actor without
         # being used to update the critic.
-        q_value_no_grad_1, q_value_no_grad_2 = network_def.apply(
+        q_value_no_grads = network_def.apply(
             frozen_params, state, sampled_action, method=network_def.critic
         )
         no_grad_q_value = jnp.squeeze(
-            jnp.minimum(q_value_no_grad_1, q_value_no_grad_2)
+            jnp.min(jnp.array(q_value_no_grads))
         )
         alpha_value = jnp.exp(jax.lax.stop_gradient(log_alpha))  # pytype: disable=wrong-arg-types  # numpy-scalars
         policy_loss = jnp.mean(alpha_value * action_log_prob - no_grad_q_value)
 
-        # TODO (update this): J(\alpha) from equation (18) in paper.
+        # J(\alpha) from equation (18) in paper.
         entropy_diff = -action_log_prob - target_entropy
         alpha_loss = jnp.mean(log_alpha * jax.lax.stop_gradient(entropy_diff))
 
@@ -198,10 +190,10 @@ def train(
             'critic_loss': critic_loss,
             'policy_loss': policy_loss,
             'alpha_loss': alpha_loss,
-            'critic_value_1': q_value_1,
-            'critic_value_2': q_value_2,
-            'target_value_1': target_q_value_1,
-            'target_value_2': target_q_value_2,
+            'critic_value_mean': jnp.mean(q_values),
+            'critic_value_std': jnp.std(q_values),
+            'target_value_mean': jnp.mean(target_q_values),
+            'target_value_std': jnp.std(target_q_values),
             'mean_action': mean_action,
         }
 
@@ -247,10 +239,10 @@ def train(
         'Losses/Critic': aux_vars['critic_loss'],
         'Losses/Actor': aux_vars['policy_loss'],
         'Losses/Alpha': aux_vars['alpha_loss'],
-        'Values/CriticValues1': jnp.mean(aux_vars['critic_value_1']),
-        'Values/CriticValues2': jnp.mean(aux_vars['critic_value_2']),
-        'Values/TargetValues1': jnp.mean(aux_vars['target_value_1']),
-        'Values/TargetValues2': jnp.mean(aux_vars['target_value_2']),
+        'Values/CriticValueMean': jnp.mean(aux_vars['critic_value_mean']),
+        'Values/CriticValueSTD': jnp.mean(aux_vars['critic_value_std']),
+        'Values/TargetValueMean': jnp.mean(aux_vars['target_value_mean']),
+        'Values/TargetValueSTD': jnp.mean(aux_vars['target_value_std']),
         'Values/Alpha': jnp.mean(jnp.exp(log_alpha)),
     }
     for i, a in enumerate(aux_vars['mean_action']):
@@ -284,8 +276,8 @@ def select_action(network_def, params, state, rng, eval_mode=False):
 
 
 @gin.configurable
-class SACNAgent(dqn_agent.JaxDQNAgent):
-    """A JAX implementation of the SAC-N agent."""
+class EnsembleSACAgent(dqn_agent.JaxDQNAgent):
+    """A JAX implementation of the SAC agent."""
 
     def __init__(
             self,
@@ -296,7 +288,8 @@ class SACNAgent(dqn_agent.JaxDQNAgent):
             observation_dtype=jnp.float32,
             reward_scale_factor=1.0,
             stack_size=1,
-            network=continuous_networks.SACNetwork,
+            network=continuous_networks.EnsembleSACNetwork,
+            num_critics=2,
             num_layers=2,
             hidden_units=256,
             gamma=0.99,
@@ -326,6 +319,7 @@ class SACNAgent(dqn_agent.JaxDQNAgent):
           reward_scale_factor: float, factor by which to scale rewards.
           stack_size: int, number of frames to use in state stack.
           network: Jax network to use for training.
+          num_critics: int, number of critics to use in the ensemble.
           num_layers: int, number of layers in the network.
           hidden_units: int, number of hidden units in the network.
           gamma: float, discount factor with the usual RL meaning.
@@ -352,7 +346,7 @@ class SACNAgent(dqn_agent.JaxDQNAgent):
             written. Lower values will result in slower training.
           allow_partial_reload: bool, whether we allow reloading a partial agent
             (for instance, only the network parameters).
-          seed: int, a seed for SAC-N's internal RNG, used for initialization and
+          seed: int, a seed for SAC's internal RNG, used for initialization and
             sampling actions.
           collector_allowlist: list of str, if using CollectorDispatcher, this can
             be used to specify which Collectors to log to.
@@ -380,6 +374,7 @@ class SACNAgent(dqn_agent.JaxDQNAgent):
         logging.info('\t observation_shape: %s', observation_shape)
         logging.info('\t observation_dtype: %s', observation_dtype)
         logging.info('\t reward_scale_factor: %f', reward_scale_factor)
+        logging.info('\t num_critics: %d', num_critics)
         logging.info('\t num_layers: %d', num_layers)
         logging.info('\t hidden_units: %d', hidden_units)
         logging.info('\t gamma: %f', gamma)
@@ -404,7 +399,7 @@ class SACNAgent(dqn_agent.JaxDQNAgent):
         self.action_limits = action_limits
         action_limits = tuple(tuple(x.reshape(-1)) for x in action_limits)
         self.network_def = network(
-            action_shape, num_layers, hidden_units, action_limits
+            action_shape, num_layers, hidden_units, action_limits, num_critics
         )
         self.gamma = gamma
         self.update_horizon = update_horizon

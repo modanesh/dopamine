@@ -22,6 +22,7 @@ from dopamine.discrete_domains import iteration_statistics
 from dopamine.discrete_domains import run_experiment as base_run_experiment
 from dopamine.jax.agents.dqn import dqn_agent
 from dopamine.jax.agents.sac import sac_agent
+from dopamine.jax.agents.sac_n import sac_n_agent
 # pylint: disable=unused-import
 from dopamine.labs.sac_from_pixels import deepmind_control_lib
 # pylint: enable=unused-import
@@ -61,6 +62,20 @@ def create_continuous_agent(
     assert isinstance(environment.action_space, spaces.Box)
     assert isinstance(environment.observation_space, spaces.Box)
     return sac_agent.SACAgent(
+        action_shape=environment.action_space.shape,
+        action_limits=(
+            environment.action_space.low,
+            environment.action_space.high,
+        ),
+        observation_shape=environment.observation_space.shape,
+        action_dtype=environment.action_space.dtype,
+        observation_dtype=environment.observation_space.dtype,
+        summary_writer=summary_writer,
+    )
+  elif agent_name == 'sac_n':
+    assert isinstance(environment.action_space, spaces.Box)
+    assert isinstance(environment.observation_space, spaces.Box)
+    return sac_n_agent.EnsembleSACAgent(
         action_shape=environment.action_space.shape,
         action_limits=(
             environment.action_space.low,
