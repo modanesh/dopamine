@@ -12,12 +12,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Compact implementation of a Soft Actor-Critic agent in JAX.
+"""Compact implementation of Ensemble Soft Actor-Critic agent in JAX.
 
 Based on agent described in
-  "Soft Actor-Critic Algorithms and Applications"
-  by Tuomas Haarnoja et al.
-  https://arxiv.org/abs/1812.05905
+  "Uncertainty-Based Offline Reinforcement Learning with Diversified Q-Ensemble"
+  by Goan An et al.
+  https://proceedings.neurips.cc/paper/2021/hash/3d3d286a8d153a4a58156d0e02d8570c-Abstract.html
 """
 
 import functools
@@ -145,7 +145,7 @@ def train(
         """
         rng1, rng2 = jax.random.split(rng, 2)
 
-        # J_Q(\theta) from equation (5) in paper.
+        # J_Q(\theta) from equation (2) in paper.
         q_values = network_def.apply(
             params, state, action, method=network_def.critic
         )
@@ -164,7 +164,7 @@ def train(
         critic_losses = losses.mse_loss(q_values, target)
         critic_loss = jnp.mean(critic_losses)
 
-        # J_{\pi}(\phi) from equation (9) in paper.
+        # J_{\pi}(\phi) from equation (2) in paper.
         mean_action, sampled_action, action_log_prob = network_def.apply(
             params, state, rng2, method=network_def.actor
         )
@@ -180,7 +180,6 @@ def train(
         alpha_value = jnp.exp(jax.lax.stop_gradient(log_alpha))  # pytype: disable=wrong-arg-types  # numpy-scalars
         policy_loss = jnp.mean(alpha_value * action_log_prob - no_grad_q_value)
 
-        # J(\alpha) from equation (18) in paper.
         entropy_diff = -action_log_prob - target_entropy
         alpha_loss = jnp.mean(log_alpha * jax.lax.stop_gradient(entropy_diff))
 
