@@ -249,7 +249,7 @@ def train(
       'Values/CriticValues2': jnp.mean(aux_vars['critic_value_2']),
       'Values/TargetValues1': jnp.mean(aux_vars['target_value_1']),
       'Values/TargetValues2': jnp.mean(aux_vars['target_value_2']),
-      'Values/Alpha': jnp.exp(log_alpha),
+      'Values/Alpha': jnp.mean(jnp.exp(log_alpha)),
   }
   for i, a in enumerate(aux_vars['mean_action']):
     returns.update({f'Values/MeanActions{i}': a})
